@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <set>
+#include <cmath>
 
 using namespace boost::multiprecision;
 using namespace std;
@@ -37,13 +38,17 @@ string create_circ_matrix(int size, int amount, int lside, int rside);
 string create_circ_matrix(int size, int amount, double lside, double rside, const int prec);
 string create_perm_matrix(int size, int amount);
 string create_triang_matrix(int size, int amount, int lside, int rside);
+bool has_negative(const Matrix& A);
+bool has_negative(const DoubleMatrix& A);
+bool is_01(const Matrix& A);
+bool is_01(const DoubleMatrix& A, double prec = 1e-12);
 
 vector<Matrix> get_from_file(string filename);
 vector<DoubleMatrix> get_from_file_double(string filename);
 void wait_for_enter();
 Matrix double_to_int(const DoubleMatrix& A, int& fix);
 
-enum Method { RYSER = 1, LAPLAS, GLYNN, GG, AB, MC };
+enum Method { RYSER = 1, LAPLAS, GLYNN, EJ, GG, AB, MC };
 enum Menu { GET_DATA_FROM_FILE = 1, CALCULATE_DATA, VIEW_DATA, GENERATE };
 enum Menu_Calculate {ALL = 1, PREC, APPROX, CHOOSE};
 enum Menu_Generate {INT_A_TO_B = 1, FLOAT_A_TO_B, SPARCE_DENSE, ONCE_STOCH, TWICE_STOCH, INT_CIRCULANT, FLOAT_CIRCULANT, PERMATURE, TRIANGULAR};
@@ -52,19 +57,26 @@ enum Menu_Generate {INT_A_TO_B = 1, FLOAT_A_TO_B, SPARCE_DENSE, ONCE_STOCH, TWIC
 /* 1*/ cpp_int ryser_perm(const Matrix& A);
 /* 2*/ cpp_int laplas_perm(const Matrix& A);
 /* 3*/ cpp_int glynn_perm(const Matrix& A);
+/* 4*/ cpp_int G(int j, vector<cpp_int> row_sums, vector<int> f, Matrix B);
+       cpp_int ej_perm(const Matrix& A);
 
 //approx
-/* 4*/ cpp_int godsil_gotman_perm(const Matrix& A, int N = 5000);
-/* 5*/ cpp_int AB_perm(const Matrix& A, int N = 500);
-/* 6*/ double mc_perm(const DoubleMatrix& A);
+/* 5*/ cpp_int godsil_gotman_perm(const Matrix& A, int N = 400);
+/* 6*/ cpp_int AB_perm(const Matrix& A, int N = 400);
+/* 7*/ double mc_perm(const DoubleMatrix& A);
 
 //det
 cpp_int det(const Matrix& A);
 double detDouble(const DoubleMatrix& A);
 
+
 //the calculation
-void calculation(vector<Matrix>, vector<Method> methods = {RYSER, LAPLAS, GLYNN, GG, AB});
-void calculation(vector<DoubleMatrix>, vector<Method> methods = {RYSER, LAPLAS, GLYNN, MC, AB});
+void calculation(vector<Matrix>, vector<Method> methods = {RYSER, LAPLAS, GLYNN, GG, AB, EJ});
+void calculation(vector<DoubleMatrix>, vector<Method> methods = {RYSER, LAPLAS, GLYNN, MC, AB, EJ, GG});
+
+void the_table(const vector<Method>& methods, size_t size, const vector<vector<cpp_int>>& results, const vector<vector<double>>& times);
+void the_table(const vector<Method>& methods, size_t size, const vector<vector<double>>& results, const vector<vector<double>>& times);
+
 
 //Fact
 const int factN = 40; 
@@ -143,6 +155,7 @@ int main()
                     cout << "Ryser" << endl;
                     cout << "Laplas" << endl;
                     cout << "Glynn" << endl;
+                    cout << "Erix B, Joel Frankin ((0,1) only)" << endl;
                     cout << "Godsil Gotman (approx, only (0,1)-matrixes)" << endl;
                     cout << "Peter MC's (approx, only twice stohastic)" << endl;
                     cout << "AB (approx, only non negative)" << endl;
@@ -165,10 +178,10 @@ int main()
                         break;
                     case PREC:
                         if (check_for_double == false) {
-                            calculation(user_matrix, { RYSER, LAPLAS, GLYNN });
+                            calculation(user_matrix, { RYSER, LAPLAS, GLYNN, EJ });
                         }
                         else {
-                            calculation(user_matrix_d, {RYSER, LAPLAS, GLYNN});
+                            calculation(user_matrix_d, { RYSER, LAPLAS, GLYNN, EJ });
                         }
                         break;
                     case APPROX:
@@ -176,18 +189,19 @@ int main()
                             calculation(user_matrix, { GG, AB });
                         }
                         else {
-                            calculation(user_matrix_d, { AB, MC });
+                            calculation(user_matrix_d, { GG, AB, MC });
                         }
                         break;
                     case CHOOSE:
                         set<Method> user_methods;
                         do {
-                            cout << "1 - Ryser" << endl;
-                            cout << "2 - Laplas" << endl;
-                            cout << "3 - Glynn" << endl;
-                            cout << "4 - Godsil Gotman (approx, (0,1) only)" << endl;
-                            cout << "5 - MC (approx, only twice stohastic)" << endl;
-                            cout << "6 - AB (approx, only non negative)" << endl;
+                            cout << "1 - Ryser - prec, any matrixes" << endl;
+                            cout << "2 - Laplas - prec, any matrixes with n < 11" << endl;
+                            cout << "3 - Glynn - prec, any matrixes" << endl;
+                            cout << "4 - E. Bax, J. Frankin ((0,1) only)" << endl;
+                            cout << "5 - Godsil Gutman (approx, (0,1) only)" << endl;
+                            cout << "6 - Alexander Barvinok (approx, only non negative)" << endl;
+                            cout << "7 - Peter McCullagh (approx, only twice stohastic)" << endl;
                             cout << "0 - done" << endl;
                             cin >> check;
 
@@ -204,28 +218,47 @@ int main()
                                 user_methods.insert(GLYNN);
                                 cout << "Glynn method was added." << endl;
                                 break;
+                            case EJ:
+                                user_methods.insert(EJ);
+                                cout << "E. Bax, J. Frankin's method was added." << endl;
+                                break;
                             case GG:
                                 user_methods.insert(GG);
-                                cout << "GG method was added." << endl;
+                                cout << "Godsil Gutman's method was added." << endl;
                                 break;
                             case MC:
-                                user_methods.insert(MC);
-                                cout << "MC method was added." << endl;
+                                if (check_for_double) {
+                                    user_methods.insert(MC);
+                                    cout << "Peter McCullagh's method was added." << endl;
+                                }
+                                else {
+                                    cout << "Cannot choose that method, matrix has to be with float elements" << endl;
+                                }
                                 break;
                             case AB:
                                 user_methods.insert(AB);
-                                cout << "AB method was added." << endl;
+                                cout << "Alexander Barvinok's method was added." << endl;
+                                break;
+                            case 0:
                                 break;
                             default:
                                 cout << "No methods were chosen!" << endl;
                                 break;
                             }
                             wait_for_enter();
-
                             system("cls");
 
                         } while (check != 0);
                         vector<Method> methods(user_methods.begin(), user_methods.end());
+                        if (check_for_double && !empty(methods)) {
+                            calculation(user_matrix_d, methods);
+                        }
+                        else if(!empty(methods)){
+                            calculation(user_matrix, methods);
+                        }
+                        else {
+                            cout << "No options were chosen." << endl;
+                        }
                         break;
                     }
                     check = 2;
@@ -479,8 +512,6 @@ string create_matrix_file(int n, int k, int lside, int rside) {
     int maxVal = max(lside, rside);
     std::uniform_int_distribution<> dist(minVal, maxVal);
 
-
-    srand(time(0));
     for (int v = 0; v < k; v++) {
         out << n << endl;
         for (int i = 0; i < n; i++) {
@@ -538,10 +569,10 @@ string create_matrix_01(int n, int k, bool sparce) {
                 }
                 else {
                     if (sparce) {
-                        out << 1 << ' ';
+                        out << 0 << ' ';
                     }
                     else {
-                        out << 0 << ' ';
+                        out << 1 << ' ';
                     }
                 }
             }
@@ -897,6 +928,99 @@ cpp_int glynn_perm(const Matrix& A) {
     }
     return perm / number;
 }
+cpp_int G(int j, vector<cpp_int> row_sums, vector<int> f, Matrix B) {
+    size_t n = B.size();
+    for (int i = 0; i < n; ++i) {
+        if (f[i] == j - 1 && row_sums[i] == 0)
+            return 0;
+    }
+    if (j == n) {
+        cpp_int prod = 1;
+        for (int i = 0; i < n; ++i) {
+            prod *= row_sums[i];
+        }
+        return prod;
+    }
+    int u = (j % 2 == 0) ? 1 : -1;
+    for (int i = 0; i < n; ++i) {
+        if (B[i][j] == 1) {
+            row_sums[i] += u;
+        }
+    }
+    cpp_int a = G(j + 1, row_sums, f, B);
+    for (int i = 0; i < n; ++i) {
+        if (B[i][j] == 1) {
+            row_sums[i] -= u;
+        }
+    }
+    cpp_int b = G(j + 1, row_sums, f, B);
+    return (a - b) * u;
+}
+cpp_int ej_perm(const Matrix& A) {
+    int n = A.size();
+    if (n == 0) return 0;
+
+    Matrix B = A;
+    vector<int> col_order;
+    vector<int> avail;
+    for (int j = 0; j < n; ++j) {
+        avail.push_back(j);
+    }
+
+    while (!avail.empty()) {
+        int best = -1;
+        int min = n + 1;
+        for (int i = 0; i < n; ++i) {
+            int count = 0;
+
+            for (int c = 0; c < avail.size(); c++) {
+                if (A[i][avail[c]] == 1) {
+                    count++;
+                }
+            }
+            if (count > 0 && count < min) {
+                min = count;
+                best = i;
+            }
+        }
+        if (best == -1) {
+            col_order.insert(col_order.end(), avail.begin(), avail.end());
+            break;
+        }
+
+        vector<int> ones_cols;
+        for (int c = 0; c < avail.size(); c++) {
+            if (A[best][avail[c]] == 1) {
+                ones_cols.push_back(avail[c]);
+            }
+        }
+        col_order.insert(col_order.end(), ones_cols.begin(), ones_cols.end());
+
+        vector<int> new_avail;
+        for (int c = 0; c < avail.size(); c++) {
+            if (find(ones_cols.begin(), ones_cols.end(), avail[c]) == ones_cols.end())
+                new_avail.push_back(avail[c]);
+        }
+        avail.swap(new_avail);
+    }
+    for (int i = 0; i < n; ++i) {
+        vector<int> new_row(n);
+        for (int j = 0; j < n; ++j) new_row[j] = A[i][col_order[j]];
+        B[i] = new_row;
+    }
+
+    vector<int> f(n, -1);
+    for (int i = 0; i < n; ++i) {
+        for (int j = n - 1; j >= 0; --j) {
+            if (B[i][j] == 1) {
+                f[i] = j;
+                break;
+            }
+        }
+    }
+    vector<cpp_int> row_sums(n, 0);
+    return G(0, row_sums, f, B);
+}
 
 cpp_int godsil_gotman_perm(const Matrix& A, int N) {
     size_t n = A.size();
@@ -978,45 +1102,36 @@ double mc_perm(const DoubleMatrix& A) {
 }
 
 cpp_int det(const Matrix& A) {
-    Matrix M = A;
-    size_t n = M.size();
-    cpp_int det = 1;
-    int sign = 1;
+    size_t n = A.size();
 
-    size_t pivot;
-   
+    vector<vector<cpp_int>> M(n, vector<cpp_int>(n));
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = 0; j < n; ++j)
+            M[i][j] = cpp_int(A[i][j]);
 
-    for (size_t i = 0; i < n; i++) {
-        long long factor;
-        pivot = i;
-        while (pivot < n && M[pivot][i] == 0) {
-            pivot++;
+    cpp_int sign = 1;
+    cpp_int prev = 1;
+
+    for (size_t k = 0; k < n - 1; ++k) {
+        size_t pivot_row = k;
+        while (pivot_row < n && M[pivot_row][k] == 0) ++pivot_row;
+        if (pivot_row == n) return cpp_int(0);
+
+        if (pivot_row != k) {
+            swap(M[k], M[pivot_row]);
+            sign = -sign;
         }
 
-        if (pivot == n) {
-            return 0;
-        }
-
-        if (pivot != i) {
-            swap(M[i], M[pivot]);
-            sign *= -1;
-        }
-
-        for (size_t j = i + 1; j < n; j++) {
-            while (M[j][i] != 0) {
-                if (abs(M[j][i]) < abs(M[i][i])) {
-                    swap(M[j], M[i]);
-                    sign *= -1;
-                }
-                factor = M[j][i] / M[i][i];
-                for (size_t k = i; k < n; k++) {
-                    M[j][k] -= factor * M[i][k];
-                }
+        const cpp_int pivot = M[k][k];
+        for (size_t i = k + 1; i < n; ++i) {
+            for (size_t j = k + 1; j < n; ++j) {
+                M[i][j] = (M[i][j] * pivot - M[i][k] * M[k][j]) / prev;
             }
+            M[i][k] = 0;
         }
-        det *= M[i][i];
+        prev = pivot;
     }
-    return det * sign;
+    return sign * M[n - 1][n - 1];
 }
 double detDouble(const DoubleMatrix& A) {
     size_t n = A.size();
@@ -1062,22 +1177,61 @@ double detDouble(const DoubleMatrix& A) {
 }
 
 void calculation(vector<Matrix> matrixes, vector<Method> methods) {
-
-    //vector<Matrix> matrixes = get_from_file(filename);
     bool has_laplas = false;
+    bool has_ab = false;
+    bool has_gg = false;
+    bool has_ej = false;
     bool laplas_check = false;
 
-    for (size_t i = 0; i < methods.size() && !has_laplas; i++) {
+    bool has_negative_elements = false;
+    bool has_non_01 = false;
+
+    for (size_t i = 0; i < methods.size(); i++) {
         if (methods[i] == LAPLAS) {
             has_laplas = true;
         }
-    }
-    if (has_laplas) {
-        for (size_t i = 0; i < matrixes.size() && !laplas_check; i++) {
-            if (matrixes[i].size() > 11) {
-                laplas_check = true;
-            }
+        if (methods[i] == AB) {
+            has_ab = true;
         }
+        if (methods[i] == EJ) {
+            has_ej = true;
+        }
+        if (methods[i] == GG) {
+            has_gg = true;
+        }
+    }
+    for (size_t i = 0; i < matrixes.size(); i++) {
+        if (matrixes[i].size() > 11) {
+            laplas_check = true;
+        }
+        if (has_negative(matrixes[i])) {
+            has_negative_elements = true;
+        }
+        if (!is_01(matrixes[i])) {
+            has_non_01 = true;
+        }
+    }
+
+    if (has_negative_elements && has_ab) {
+        cout << "Methods include AB' method of calculating permanent." << endl;
+        cout << "Data has matrix with negative elements" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), AB), methods.end());
+    }
+    if (has_non_01 && has_gg) {
+        cout << "Methods include GG' method of calculating permanent." << endl;
+        cout << "Data has matrix that isn't (0,1)" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), GG), methods.end());
+    }
+    if (has_non_01 && has_ej) {
+        cout << "Methods include EJ' method of calculating permanent." << endl;
+        cout << "Data has matrix that isn't (0,1)" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), EJ), methods.end());
+    }
+
+    if (has_laplas) {
         if (laplas_check) {
             string t;
             cout << "Methods include Laplas' method of calculating permanent." << endl;
@@ -1096,10 +1250,10 @@ void calculation(vector<Matrix> matrixes, vector<Method> methods) {
     vector<vector<cpp_int>> results(matrixes.size(), vector<cpp_int>(methods.size()));
     vector<vector<double>> times(matrixes.size(), vector<double>(methods.size()));
 
-    const int NAME_WIDTH = 15;
-    const int TIME_WIDTH = 12;
     for (size_t j = 0; j < matrixes.size(); j++) {
         cout << "Processing matrix " << j + 1 << "/" << matrixes.size() << "...\r" << flush;
+        size_t n = matrixes[j].size();
+        n = n * n;
         for (size_t m = 0; m < methods.size(); m++) {
             chrono::high_resolution_clock::time_point start;
 
@@ -1111,10 +1265,9 @@ void calculation(vector<Matrix> matrixes, vector<Method> methods) {
                 break;
 
             case LAPLAS:
-                if (has_laplas) {
-                    start = chrono::high_resolution_clock::now();
-                    results[j][m] = laplas_perm(matrixes[j]);
-                }
+                start = chrono::high_resolution_clock::now();
+                results[j][m] = laplas_perm(matrixes[j]);
+                
                 break;
 
             case GLYNN:
@@ -1123,129 +1276,83 @@ void calculation(vector<Matrix> matrixes, vector<Method> methods) {
                 break;
 
             case GG:
-                for (size_t i = 0; i < matrixes[j].size(); i++) {
-                    for (size_t v = 0; v < matrixes[j].size(); v++) {
-                        if (matrixes[j][i][v] < 0) {
-                            throw std::runtime_error("GG_perm: Matrix contains negative elements");
-                        }
-                    }
-                }
                 start = chrono::high_resolution_clock::now();
-                results[j][m] = godsil_gotman_perm(matrixes[j]);
+                results[j][m] = godsil_gotman_perm(matrixes[j], n);
                 break;
 
             case AB:
-                for (size_t i = 0; i < matrixes[j].size(); i++) {
-                    for (size_t v = 0; v < matrixes[j].size(); v++) {
-                        if (matrixes[j][i][v] < 0) {
-                            throw std::runtime_error("AB_perm: Matrix contains negative elements");
-                        }
-                    }
-                }
                 start = chrono::high_resolution_clock::now();
-                results[j][m] = AB_perm(matrixes[j]);
+                results[j][m] = AB_perm(matrixes[j], n);
+                break;
+            case EJ:
+                start = chrono::high_resolution_clock::now();
+                results[j][m] = ej_perm(matrixes[j]);
                 break;
             }
+
             auto end = chrono::high_resolution_clock::now();
             times[j][m] = chrono::duration<double>(end - start).count();
-            //cout << results[j][m];
         }
     }
 
-    cout << "\nTIME (seconds)\n";
-    cout << left << setw(NAME_WIDTH) << "Matrix";
-    for (auto& method : methods) {
-        switch (method) {
-        case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
-        case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
-        case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
-        case GG: cout << setw(TIME_WIDTH) << "GG"; break;
-        case AB: cout << setw(TIME_WIDTH) << "AB"; break;
-        }
-    }
-    cout << "\n";
-    cout << string(NAME_WIDTH, '-') << "+";
-    for (size_t i = 0; i < methods.size(); i++) {
-        cout << string(TIME_WIDTH, '-');
-        if (i < methods.size() - 1) cout << "+";
-    }
-    cout << endl;
-
-    vector<double> time_sums(methods.size(), 0.0);
-    for (size_t j = 0; j < matrixes.size(); j++) {
-        cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
-        for (size_t m = 0; m < methods.size(); m++) {
-            cout << setw(TIME_WIDTH) << fixed << setprecision(4) << times[j][m];
-            time_sums[m] += times[j][m];
-        }
-        cout << endl;
-    }
-
-    cout << string(NAME_WIDTH, '-') << "+";
-    for (size_t i = 0; i < methods.size(); i++) {
-        cout << string(TIME_WIDTH, '-');
-        if (i < methods.size() - 1) cout << "+";
-    }
-    cout << endl;
-
-    cout << left << setw(NAME_WIDTH) << "AVERAGE";
-    for (size_t m = 0; m < methods.size(); m++) {
-        double avg = time_sums[m] / matrixes.size();
-        cout << setw(TIME_WIDTH) << fixed << setprecision(4) << avg;
-    }
-    cout << endl;
-
-    cout << "\nPERMANENT VALUES\n";
-    cout << left << setw(NAME_WIDTH) << "Matrix";
-
-    for (auto& method : methods) {
-        switch (method) {
-        case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
-        case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
-        case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
-        case GG: cout << setw(TIME_WIDTH) << "GG"; break;
-        case AB: cout << setw(TIME_WIDTH) << "AB"; break;
-        }
-    }
-    cout << "\n";
-
-    cout << string(NAME_WIDTH, '-') << "+";
-    for (size_t i = 0; i < methods.size(); i++) {
-        cout << string(TIME_WIDTH, '-');
-        if (i < methods.size() - 1) cout << "+";
-    }
-    cout << endl;
-
-    for (size_t j = 0; j < matrixes.size(); j++) {
-        cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
-
-        for (size_t m = 0; m < methods.size(); m++) {
-            string val = results[j][m].str();
-            if (val.length() > TIME_WIDTH) {
-                val = val.substr(0, TIME_WIDTH - 3) + "...";
-            }
-            cout << setw(TIME_WIDTH) << val;
-        }
-        cout << endl;
-    }
+    the_table(methods, matrixes.size(), results, times);
 }
 void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
-
-    //vector<Matrix> matrixes = get_from_file(filename);
     bool has_laplas = false;
+    bool has_ab = false;
+    bool has_gg = false;
+    bool has_ej = false;
     bool laplas_check = false;
 
-    for (size_t i = 0; i < methods.size() && !has_laplas; i++) {
+    bool has_negative_elements = false;
+    bool has_non_01 = false;
+
+    for (size_t i = 0; i < methods.size(); i++) {
         if (methods[i] == LAPLAS) {
             has_laplas = true;
         }
-    }
-    if (has_laplas) {
-        for (size_t i = 0; i < matrixes.size() && !laplas_check; i++) {
-            if (matrixes[i].size() > 11) {
-                laplas_check = true;
-            }
+        if (methods[i] == AB) {
+            has_ab = true;
         }
+        if (methods[i] == EJ) {
+            has_ej = true;
+        }
+        if (methods[i] == GG) {
+            has_gg = true;
+        }
+    }
+    for (size_t i = 0; i < matrixes.size(); i++) {
+        if (matrixes[i].size() > 11) {
+            laplas_check = true;
+        }
+        if (has_negative(matrixes[i])) {
+            has_negative_elements = true;
+        }
+        if (!is_01(matrixes[i])) {
+            has_non_01 = true;
+        }
+    }
+
+    if (has_negative_elements && has_ab) {
+        cout << "Methods include AB' method of calculating permanent." << endl;
+        cout << "Data has matrix with negative elements" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), AB), methods.end());
+    }
+    if (has_non_01 && has_gg) {
+        cout << "Methods include GG' method of calculating permanent." << endl;
+        cout << "Data has matrix that isn't (0,1)" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), GG), methods.end());
+    }
+    if (has_non_01 && has_ej) {
+        cout << "Methods include EJ' method of calculating permanent." << endl;
+        cout << "Data has matrix that isn't (0,1)" << endl;
+        cout << "Method will be removed." << endl;
+        methods.erase(remove(methods.begin(), methods.end(), EJ), methods.end());
+    }
+
+    if (has_laplas) {
         if (laplas_check) {
             string t;
             cout << "Methods include Laplas' method of calculating permanent." << endl;
@@ -1264,11 +1371,9 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
     vector<vector<double>> results(matrixes.size(), vector<double>(methods.size()));
     vector<vector<double>> times(matrixes.size(), vector<double>(methods.size()));
 
-    const int NAME_WIDTH = 15;
-    const int TIME_WIDTH = 12;
     for (size_t j = 0; j < matrixes.size(); j++) {
         cout << "Processing matrix " << j + 1 << "/" << matrixes.size() << "...\r" << flush;
-        int fix;
+        int fix = 0;
         Matrix B = double_to_int(matrixes[j], fix);
         cpp_int power = pow(cpp_int(10), fix);
         cpp_rational result = 0;
@@ -1284,11 +1389,10 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
                 break;
 
             case LAPLAS:
-                if (has_laplas) {
-                    start = chrono::high_resolution_clock::now();
-                    result = cpp_rational(laplas_perm(B)) / power;
-                    results[j][m] = result.convert_to<double>();
-                }
+                start = chrono::high_resolution_clock::now();
+                result = cpp_rational(laplas_perm(B)) / power;
+                results[j][m] = result.convert_to<double>();
+               
                 break;
 
             case GLYNN:
@@ -1298,38 +1402,31 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
                 break;
 
             case GG:
-                for (size_t i = 0; i < matrixes[j].size(); i++) {
-                    for (size_t v = 0; v < matrixes[j].size(); v++) {
-                        if (matrixes[j][i][v] < 0) {
-                            throw std::runtime_error("GG_perm: Matrix contains negative elements");
-                        }
-                        if (matrixes[j][i][v] != 0 && matrixes[j][i][v] != 1) {
-                            throw std::runtime_error("GG_perm: Matrix has to contain 0 or 1s only");
-                        }
-                    }
-                }
                 start = chrono::high_resolution_clock::now();
                 result = cpp_rational(godsil_gotman_perm(B)) / power;
                 results[j][m] = result.convert_to<double>();
                 break;
 
             case AB:
-                for (size_t i = 0; i < matrixes[j].size(); i++) {
-                    for (size_t v = 0; v < matrixes[j].size(); v++) {
-                        if (matrixes[j][i][v] < 0) {
-                            throw std::runtime_error("AB_perm: Matrix contains negative elements");
-                        }
-                    }
-                }
                 start = chrono::high_resolution_clock::now();
                 result = cpp_rational(AB_perm(B)) / power;
                 results[j][m] = result.convert_to<double>();
+                break;
+            case MC:
+                start = chrono::high_resolution_clock::now();
+                results[j][m] = mc_perm(matrixes[j]);
                 break;
             }
             auto end = chrono::high_resolution_clock::now();
             times[j][m] = chrono::duration<double>(end - start).count();
         }
     }
+    the_table(methods, matrixes.size(), results, times);
+}
+
+void the_table(const vector<Method>& methods, size_t size, const vector<vector<cpp_int>>& results, const vector<vector<double>>& times) {
+    const int NAME_WIDTH = 25;
+    const int TIME_WIDTH = 25;
 
     cout << "\nTIME (seconds)\n";
     cout << left << setw(NAME_WIDTH) << "Matrix";
@@ -1338,8 +1435,10 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
         case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
         case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
         case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
-        case GG: cout << setw(TIME_WIDTH) << "GG"; break;
-        case AB: cout << setw(TIME_WIDTH) << "AB"; break;
+        case EJ: cout << setw(TIME_WIDTH) << "E.Bax J.Frankin"; break;
+        case GG: cout << setw(TIME_WIDTH) << "Godsil-Gotman"; break;
+        case AB: cout << setw(TIME_WIDTH) << "A.Barvinok"; break;
+        case MC: cout << setw(TIME_WIDTH) << "P.McCullagh"; break;
         }
     }
     cout << "\n";
@@ -1351,7 +1450,7 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
     cout << endl;
 
     vector<double> time_sums(methods.size(), 0.0);
-    for (size_t j = 0; j < matrixes.size(); j++) {
+    for (size_t j = 0; j < size; j++) {
         cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
         for (size_t m = 0; m < methods.size(); m++) {
             cout << setw(TIME_WIDTH) << fixed << setprecision(4) << times[j][m];
@@ -1369,7 +1468,7 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
 
     cout << left << setw(NAME_WIDTH) << "AVERAGE";
     for (size_t m = 0; m < methods.size(); m++) {
-        double avg = time_sums[m] / matrixes.size();
+        double avg = time_sums[m] / size;
         cout << setw(TIME_WIDTH) << fixed << setprecision(4) << avg;
     }
     cout << endl;
@@ -1382,8 +1481,10 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
         case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
         case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
         case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
-        case GG: cout << setw(TIME_WIDTH) << "GG"; break;
-        case AB: cout << setw(TIME_WIDTH) << "AB"; break;
+        case EJ: cout << setw(TIME_WIDTH) << "E.Bax J.Frankin"; break;
+        case GG: cout << setw(TIME_WIDTH) << "Godsil-Gotman"; break;
+        case AB: cout << setw(TIME_WIDTH) << "A.Barvinok"; break;
+        case MC: cout << setw(TIME_WIDTH) << "P.McCullagh"; break;
         }
     }
     cout << "\n";
@@ -1395,7 +1496,92 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
     }
     cout << endl;
 
-    for (size_t j = 0; j < matrixes.size(); j++) {
+    for (size_t j = 0; j < size; j++) {
+        cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
+
+        for (size_t m = 0; m < methods.size(); m++) {
+            string val = results[j][m].str();
+            if (val.length() > TIME_WIDTH) {
+                val = val.substr(0, TIME_WIDTH - 3) + "...";
+            }
+            cout << setw(TIME_WIDTH) << val;
+        }
+        cout << endl;
+    }
+}
+void the_table(const vector<Method>& methods, size_t size, const vector<vector<double>>& results, const vector<vector<double>>& times) {
+    const int NAME_WIDTH = 15;
+    const int TIME_WIDTH = 12;
+
+    cout << "\nTIME (seconds)\n";
+    cout << left << setw(NAME_WIDTH) << "Matrix";
+    for (auto& method : methods) {
+        switch (method) {
+        case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
+        case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
+        case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
+        case EJ: cout << setw(TIME_WIDTH) << "E.Bax J.Frankin"; break;
+        case GG: cout << setw(TIME_WIDTH) << "Godsil-Gotman"; break;
+        case AB: cout << setw(TIME_WIDTH) << "A.Barvinok"; break;
+        case MC: cout << setw(TIME_WIDTH) << "P.McCullagh"; break;
+        }
+    }
+    cout << "\n";
+    cout << string(NAME_WIDTH, '-') << "+";
+    for (size_t i = 0; i < methods.size(); i++) {
+        cout << string(TIME_WIDTH, '-');
+        if (i < methods.size() - 1) cout << "+";
+    }
+    cout << endl;
+
+    vector<double> time_sums(methods.size(), 0.0);
+    for (size_t j = 0; j < size; j++) {
+        cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
+        for (size_t m = 0; m < methods.size(); m++) {
+            cout << setw(TIME_WIDTH) << fixed << setprecision(4) << times[j][m];
+            time_sums[m] += times[j][m];
+        }
+        cout << endl;
+    }
+
+    cout << string(NAME_WIDTH, '-') << "+";
+    for (size_t i = 0; i < methods.size(); i++) {
+        cout << string(TIME_WIDTH, '-');
+        if (i < methods.size() - 1) cout << "+";
+    }
+    cout << endl;
+
+    cout << left << setw(NAME_WIDTH) << "AVERAGE";
+    for (size_t m = 0; m < methods.size(); m++) {
+        double avg = time_sums[m] / size;
+        cout << setw(TIME_WIDTH) << fixed << setprecision(4) << avg;
+    }
+    cout << endl;
+
+    cout << "\nPERMANENT VALUES\n";
+    cout << left << setw(NAME_WIDTH) << "Matrix";
+
+    for (auto& method : methods) {
+        switch (method) {
+        case RYSER: cout << setw(TIME_WIDTH) << "Ryser"; break;
+        case LAPLAS: cout << setw(TIME_WIDTH) << "Laplas"; break;
+        case GLYNN: cout << setw(TIME_WIDTH) << "Glynn"; break;
+        case EJ: cout << setw(TIME_WIDTH) << "E.Bax J.Frankin"; break;
+        case GG: cout << setw(TIME_WIDTH) << "Godsil-Gotman"; break;
+        case AB: cout << setw(TIME_WIDTH) << "A.Barvinok"; break;
+        case MC: cout << setw(TIME_WIDTH) << "P.McCullagh"; break;
+        }
+    }
+    cout << "\n";
+
+    cout << string(NAME_WIDTH, '-') << "+";
+    for (size_t i = 0; i < methods.size(); i++) {
+        cout << string(TIME_WIDTH, '-');
+        if (i < methods.size() - 1) cout << "+";
+    }
+    cout << endl;
+
+    for (size_t j = 0; j < size; j++) {
         cout << left << setw(NAME_WIDTH) << ("Matrix " + to_string(j + 1));
 
         for (size_t m = 0; m < methods.size(); m++) {
@@ -1407,6 +1593,51 @@ void calculation(vector<DoubleMatrix> matrixes, vector<Method> methods) {
         }
         cout << endl;
     }
+}
+
+bool has_negative(const Matrix& A) {
+    size_t n1 = A.size();
+    for (size_t i = 0; i < n1; i++) {
+        for (size_t j = 0; j < n1; j++) {
+            if (A[i][j] < 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+bool has_negative(const DoubleMatrix& A) {
+    size_t n1 = A.size();
+    for (size_t i = 0; i < n1; i++) {
+        for (size_t j = 0; j < n1; j++) {
+            if (A[i][j] < 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+bool is_01(const Matrix& A) {
+    size_t n1 = A.size();
+    for (size_t i = 0; i < n1; i++) {
+        for (size_t j = 0; j < n1; j++) {
+            if (A[i][j] != 0 && A[i][j] != 1) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+bool is_01(const DoubleMatrix& A, double prec) {
+    size_t n1 = A.size();
+    for (size_t i = 0; i < n1; i++) {
+        for (size_t j = 0; j < n1; j++) {
+            if (fabs(A[i][j]) > prec && fabs(A[i][j] - 1) > prec) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 void build_factorial() {
